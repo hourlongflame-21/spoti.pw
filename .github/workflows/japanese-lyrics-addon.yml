@@ -1,0 +1,26 @@
+name: Build Japanese lyrics add-on
+on:
+  push:
+    branches: ["codex/japanese-lyrics-023"]
+    paths: ["addons/japanese-lyrics/**", ".github/workflows/japanese-lyrics-addon.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: addons/japanese-lyrics
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test IPA packager
+        run: python3 -m unittest discover -s tests -v
+      - name: Build and verify add-on
+        run: bash build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JapaneseLyricsAddon
+          path: addons/japanese-lyrics/build/
+          if-no-files-found: error
+          retention-days: 7
