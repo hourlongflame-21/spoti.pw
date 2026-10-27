@@ -16,6 +16,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test IPA packager
         run: python3 -m unittest discover -s tests -v
+      - name: Test language and explanation policy
+        run: |
+          clang -fobjc-arc -Wall -Wextra -Werror -framework Foundation -framework NaturalLanguage JPPolicy.m tests/policy_test.m -o "$RUNNER_TEMP/jp-policy-tests"
+          "$RUNNER_TEMP/jp-policy-tests"
       - name: Build and verify add-on
         run: bash build.sh
       - uses: actions/upload-artifact@v4
