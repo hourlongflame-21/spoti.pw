@@ -7,7 +7,7 @@
 #import <objc/message.h>
 #import <dlfcn.h>
 
-static char markerKey, applyingKey;
+static char markerKey, applyingKey, gestureProxyKey;
 static void (*originalOffer)(id, SEL);
 static NSString *(*lineText)(id);
 static Ivar linesIvar, trackIvar, extrasIvar;
@@ -274,6 +274,37 @@ static void Translate(UIView *view) {
         });
     }] resume];
 }
+// Keep the lyrics view's own seek/meaning gestures off the translation control.
+@interface JPTranslationGestureDelegate : NSObject <UIGestureRecognizerDelegate>
+@property (nonatomic, weak) id<UIGestureRecognizerDelegate> previous;
+@property (nonatomic, weak) UIButton *button;
+@end
+@implementation JPTranslationGestureDelegate
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldReceiveTouch:(UITouch *)touch {
+    if (self.button && [touch.view isDescendantOfView:self.button]) return NO;
+    id<UIGestureRecognizerDelegate> previous = self.previous;
+    return [previous respondsToSelector:_cmd] ? [previous gestureRecognizer:recognizer shouldReceiveTouch:touch] : YES;
+}
+- (BOOL)respondsToSelector:(SEL)selector {
+    return [super respondsToSelector:selector] || [self.previous respondsToSelector:selector];
+}
+- (id)forwardingTargetForSelector:(SEL)selector {
+    id previous = self.previous;
+    return [previous respondsToSelector:selector] ? previous : [super forwardingTargetForSelector:selector];
+}
+@end
+static void ProtectButtonGestures(UIView *view, UIButton *button) {
+    for (UIGestureRecognizer *recognizer in view.gestureRecognizers) {
+        JPTranslationGestureDelegate *proxy = objc_getAssociatedObject(recognizer, &gestureProxyKey);
+        if (!proxy) {
+            proxy = [JPTranslationGestureDelegate new];
+            proxy.previous = recognizer.delegate;
+            objc_setAssociatedObject(recognizer, &gestureProxyKey, proxy, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            recognizer.delegate = proxy;
+        }
+        proxy.button = button;
+    }
+}
 static void Offer(id obj, SEL selector) {
     UIView *view = obj;
     originalOffer(obj, selector);
@@ -309,6 +340,7 @@ static void Offer(id obj, SEL selector) {
     __weak UIView *weakView = view;
     // A tap translates immediately; the same button's long-press menu keeps settings.
     button.showsMenuAsPrimaryAction = NO;
+    ProtectButtonGestures(view, button);
     [button removeActionForIdentifier:@"hourlong.jp.primary" forControlEvents:UIControlEventTouchUpInside];
     UIAction *translate = [UIAction actionWithTitle:@"日本語に翻訳"
         image:nil identifier:@"hourlong.jp.primary" handler:^(UIAction *action) { Translate(weakView); }];
