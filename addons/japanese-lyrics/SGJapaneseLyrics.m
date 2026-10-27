@@ -8,7 +8,7 @@
 #import <dlfcn.h>
 #import "JPPolicy.h"
 
-static char markerKey, applyingKey, gestureProxyKey, autoScheduledKey, languageKey;
+static char markerKey, applyingKey, gestureProxyKey, autoScheduledKey, languageKey, visibilityKey;
 static void (*originalOffer)(id, SEL);
 static NSString *(*lineText)(id);
 static Ivar linesIvar, trackIvar, extrasIvar, scrollIvar, shownIvar;
@@ -366,7 +366,9 @@ static id StyleNow(id view, SEL selector) {
     }
     NSInteger mode = DisplayMode();
     BOOL translationOnly = mode == 1 && complete && any;
-    [style setValue:translationOnly ? @[@2] : (mode == 2 ? @[@0] : @[@0, @2]) forKey:@"order"];
+    NSMutableArray *order = [[style valueForKey:@"order"] mutableCopy] ?: [NSMutableArray arrayWithObject:@0];
+    if (![order containsObject:@2]) [order addObject:@2];
+    [style setValue:translationOnly ? @[@2] : (mode == 2 ? @[@0] : order) forKey:@"order"];
     [style setValue:[UIFont systemFontOfSize:translationOnly ? FontSize() : round(FontSize() * 0.67)
                                     weight:UIFontWeightSemibold] forKey:@"translation"];
     // Missing translations fall back to the original text, avoiding empty lyric rows.
@@ -377,7 +379,12 @@ static void MovedToWindow(id view, SEL selector) {
 }
 static void SetShowing(id view, SEL selector, BOOL showing) {
     originalShowing(view, selector, showing);
-    if (showing) ScheduleAuto(view);
+    BOOL visible = showing && Visible(view);
+    BOOL previous = [objc_getAssociatedObject(view, &visibilityKey) boolValue];
+    if (visible != previous) {
+        objc_setAssociatedObject(view, &visibilityKey, @(visible), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (visible) ScheduleAuto(view);
+    }
 }
 
 @interface JPMeaningController : UIViewController
