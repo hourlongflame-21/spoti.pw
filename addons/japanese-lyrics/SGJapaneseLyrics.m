@@ -319,10 +319,17 @@ static void Offer(id obj, SEL selector) {
     }
     UIButton *button = Object(view, extrasIvar);
     if (!button) {
-        UIButtonConfiguration *config = [UIButtonConfiguration filledButtonConfiguration];
+        UIButtonConfiguration *config;
+        if (@available(iOS 26.0, *)) {
+            config = [UIButtonConfiguration glassButtonConfiguration];
+        } else {
+            config = [UIButtonConfiguration filledButtonConfiguration];
+            config.baseBackgroundColor = [UIColor colorWithWhite:0.18 alpha:0.9];
+        }
         config.image = [UIImage systemImageNamed:@"translate"];
+        config.preferredSymbolConfigurationForImage =
+            [UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightSemibold];
         config.baseForegroundColor = UIColor.whiteColor;
-        config.baseBackgroundColor = [UIColor colorWithWhite:0.18 alpha:0.9];
         config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
         button = [UIButton buttonWithConfiguration:config primaryAction:nil];
         button.showsMenuAsPrimaryAction = YES;
