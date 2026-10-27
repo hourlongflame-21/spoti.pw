@@ -307,14 +307,20 @@ static void Offer(id obj, SEL selector) {
     }
     BOOL working = [pending containsObject:identity];
     __weak UIView *weakView = view;
-    UIAction *translate = [UIAction actionWithTitle:working ? @"日本語に翻訳中…" : @"日本語に翻訳（Gemini）"
-        image:[UIImage systemImageNamed:@"translate"] identifier:@"hourlong.jp.translate" handler:^(UIAction *action) { Translate(weakView); }];
-    if (working) translate.attributes = UIMenuElementAttributesDisabled;
-    [items addObject:translate];
+    // A tap translates immediately; the same button's long-press menu keeps settings.
+    button.showsMenuAsPrimaryAction = NO;
+    [button removeActionForIdentifier:@"hourlong.jp.primary" forControlEvents:UIControlEventTouchUpInside];
+    UIAction *translate = [UIAction actionWithTitle:@"日本語に翻訳"
+        image:nil identifier:@"hourlong.jp.primary" handler:^(UIAction *action) { Translate(weakView); }];
+    [button addAction:translate forControlEvents:UIControlEventTouchUpInside];
+    UIButtonConfiguration *configuration = [button.configuration copy];
+    configuration.showsActivityIndicator = working;
+    button.configuration = configuration;
     [items addObject:[UIAction actionWithTitle:@"日本語翻訳の設定" image:[UIImage systemImageNamed:@"gearshape"]
         identifier:@"hourlong.jp.configure" handler:^(UIAction *action) { Configure(weakView); }]];
     button.menu = [UIMenu menuWithChildren:items];
-    button.accessibilityLabel = @"翻訳と発音";
+    button.accessibilityLabel = working ? @"日本語に翻訳中" : @"日本語に翻訳";
+    button.accessibilityHint = @"タップで翻訳、長押しで設定";
     button.hidden = NO;
     [view setNeedsLayout];
 }
