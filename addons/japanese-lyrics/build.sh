@@ -6,7 +6,7 @@ SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 xcrun --sdk iphoneos clang -target arm64-apple-ios16.1 \
   -isysroot "$SDK" -fobjc-arc -fblocks -dynamiclib -O2 \
   -Wall -Wextra -Werror -Wno-unused-parameter -Wno-deprecated-declarations \
-  -framework Foundation -framework UIKit -framework Security -framework NaturalLanguage \
+  -framework Foundation -framework UIKit -framework Security -framework NaturalLanguage -framework CoreGraphics \
   -install_name @executable_path/Frameworks/SGJapaneseLyrics.dylib \
   SGJapaneseLyrics.m JPPolicy.m -o build/SGJapaneseLyrics.dylib
 codesign --force --sign - build/SGJapaneseLyrics.dylib
