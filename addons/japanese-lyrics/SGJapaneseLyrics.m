@@ -43,7 +43,8 @@ static CGFloat FontSize(void) {
 static NSString *const service = @"local.hourlong.japanese-lyrics";
 static NSString *const modelKey = @"hourlong.japaneseLyrics.model";
 static NSString *const showKey = @"spotifyglass.redesign.lyricsTranslation";
-static NSMutableSet<NSString *> *pending;
+static NSMutableSet<NSString *> *pending, *preparing;
+static BOOL Visible(UIView *view);
 static NSHashTable<UIView *> *views;
 static JPTranslationCache *translationCache;
 static void TranslateNow(UIView *view, BOOL automatic);
@@ -241,18 +242,20 @@ static NSArray *Decode(NSData *data, NSInteger status, NSUInteger uniqueCount, N
 static void Translate(UIView *view, BOOL automatic) {
     NSArray *texts = Texts(Object(view, linesIvar));
     NSString *identity = Identity(Object(view, trackIvar), texts);
-    if (!identity || !texts.count || texts.count > 400 || [pending containsObject:identity] || HasApplied(view, identity)) return;
+    if (!identity || !texts.count || texts.count > 400 || [pending containsObject:identity] || [preparing containsObject:identity] || HasApplied(view, identity)) return;
     __weak UIView *weakView = view;
+    [preparing addObject:identity]; RefreshMenus();
     // Warm language decisions off the UI thread. Both cache callbacks and API setup return to main.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         BOOL eligible = !automatic || JPShouldAutoTranslate(texts);
         if (!automatic) for (NSString *text in texts) JPKeepOriginal(text);
         [translationCache readIdentity:identity count:texts.count completion:^(NSArray *saved) {
+            [preparing removeObject:identity]; RefreshMenus();
             UIView *v = weakView;
             if (!v || HasApplied(v, identity) || ![Identity(Object(v, trackIvar), Texts(Object(v, linesIvar))) isEqual:identity]) return;
             if (saved) Apply(v, identity, saved);
             else if (!eligible) return;
-            else if (!automatic || (AutoEnabled() && DisplayMode() != 2)) TranslateNow(v, automatic);
+            else if (!automatic || (AutoEnabled() && DisplayMode() != 2 && Visible(v))) TranslateNow(v, automatic);
         }];
     });
 }
@@ -327,7 +330,7 @@ static void ScheduleAuto(UIView *view) {
     NSArray *texts = Texts(lines);
     NSString *identity = Identity(Object(view, trackIvar), texts);
     if (!identity || HasApplied(view, identity) ||
-        [pending containsObject:identity] || [autoAttempted containsObject:identity] ||
+        [pending containsObject:identity] || [preparing containsObject:identity] || [autoAttempted containsObject:identity] ||
         [objc_getAssociatedObject(view, &autoScheduledKey) isEqual:identity]) return;
     NSDictionary *language = objc_getAssociatedObject(view, &languageKey);
     if (![language[@"identity"] isEqual:identity]) {
@@ -717,7 +720,7 @@ static void Offer(id obj, SEL selector) {
         }
         [items addObject:item];
     }
-    BOOL working = [pending containsObject:identity];
+    BOOL working = [pending containsObject:identity] || [preparing containsObject:identity];
     __weak UIView *weakView = view;
     // A tap translates immediately; the same button's long-press menu keeps settings.
     button.showsMenuAsPrimaryAction = NO;
@@ -793,7 +796,7 @@ static void Install(void) {
         !class_getInstanceVariable(style, "_order") || !class_getInstanceVariable(style, "_translation") ||
         !class_getInstanceMethod(c, NSSelectorFromString(@"timeLines")) ||
         !class_getInstanceMethod(c, NSSelectorFromString(@"restyle"))) return;
-    pending = [NSMutableSet set]; views = [NSHashTable weakObjectsHashTable];
+    pending = [NSMutableSet set]; preparing = [NSMutableSet set]; views = [NSHashTable weakObjectsHashTable];
     translationCache = [[JPTranslationCache alloc] initWithDirectory:CacheDirectory()];
     autoAttempted = [NSMutableSet set]; explanationPending = [NSMutableSet set];
     originalStyle = (id (*)(id, SEL))method_setImplementation(styleMethod, (IMP)StyleNow);
