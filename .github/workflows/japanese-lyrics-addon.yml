@@ -20,6 +20,10 @@ jobs:
         run: |
           clang -fobjc-arc -Wall -Wextra -Werror -framework Foundation -framework NaturalLanguage JPPolicy.m tests/policy_test.m -o "$RUNNER_TEMP/jp-policy-tests"
           "$RUNNER_TEMP/jp-policy-tests"
+      - name: Test researched explanation and citations
+        run: |
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -framework Foundation JPResearch.m tests/research_test.m -o "$RUNNER_TEMP/jp-research-tests"
+          "$RUNNER_TEMP/jp-research-tests"
       - name: Build and verify add-on
         run: bash build.sh
       - uses: actions/upload-artifact@v4
