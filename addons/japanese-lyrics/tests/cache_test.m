@@ -48,7 +48,7 @@ int main(void) {
         [[NSMutableData dataWithLength:3*1024*1024] writeToURL:huge atomically:YES];
         Check(!Read(cache, Key(4), 1), @"oversized cache ignored");
         __block BOOL done = NO;
-        [cache readIdentity:Key(1) count:1 completion:^(NSArray *value) { done = YES; }];
+        [cache readIdentity:Key(1) count:1 completion:^(NSArray *value) { (void)value; done = YES; }];
         Check(!done, @"warm cache callback is asynchronous"); Wait(&done);
         NSURL *unrelated = [dir URLByAppendingPathComponent:@"user-notes.json"];
         [@"keep" writeToURL:unrelated atomically:YES encoding:NSUTF8StringEncoding error:NULL];
