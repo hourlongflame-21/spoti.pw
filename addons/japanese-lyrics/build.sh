@@ -8,7 +8,7 @@ xcrun --sdk iphoneos clang -target arm64-apple-ios16.1 \
   -Wall -Wextra -Werror -Wno-unused-parameter -Wno-deprecated-declarations \
   -framework Foundation -framework UIKit -framework Security -framework NaturalLanguage -framework CoreGraphics -framework WebKit \
   -install_name @executable_path/Frameworks/SGJapaneseLyrics.dylib \
-  SGJapaneseLyrics.m JPPolicy.m JPResearch.m -o build/SGJapaneseLyrics.dylib
+  SGJapaneseLyrics.m JPPolicy.m JPResearch.m JPTranslationCache.m -o build/SGJapaneseLyrics.dylib
 codesign --force --sign - build/SGJapaneseLyrics.dylib
 codesign --verify --verbose build/SGJapaneseLyrics.dylib
 xcrun --sdk iphoneos otool -hv build/SGJapaneseLyrics.dylib

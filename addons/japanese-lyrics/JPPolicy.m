@@ -2,16 +2,30 @@
 #import <NaturalLanguage/NaturalLanguage.h>
 
 static BOOL HasKana(NSString *text) {
-    return [text rangeOfString:@"[\\p{Hiragana}\\p{Katakana}]" options:NSRegularExpressionSearch].location != NSNotFound;
+    static NSRegularExpression *regex;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ regex = [NSRegularExpression regularExpressionWithPattern:@"[\\p{Hiragana}\\p{Katakana}]" options:0 error:NULL]; });
+    return [regex firstMatchInString:text options:0 range:NSMakeRange(0, text.length)] != nil;
 }
 BOOL JPKeepOriginal(NSString *text) {
-    if (HasKana(text)) return YES;
+    if (!text.length) return NO;
+    static NSCache *decisions;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ decisions = [NSCache new]; decisions.countLimit = 1024; decisions.totalCostLimit = 1024*1024; });
+    NSNumber *known = [decisions objectForKey:text];
+    if (known) return known.boolValue;
+    if (HasKana(text)) { [decisions setObject:@YES forKey:text cost:text.length*2]; return YES; }
     NLLanguageRecognizer *r = [NLLanguageRecognizer new];
     [r processString:text];
-    return [r.dominantLanguage isEqual:NLLanguageJapanese] &&
+    BOOL japanese = [r.dominantLanguage isEqual:NLLanguageJapanese] &&
         [r languageHypothesesWithMaximum:1][NLLanguageJapanese].doubleValue >= 0.70;
+    [decisions setObject:@(japanese) forKey:text cost:text.length*2];
+    return japanese;
 }
 BOOL JPShouldAutoTranslate(NSArray<NSString *> *texts) {
+    if (texts.count > 400) return NO;
+    NSUInteger length = 0;
+    for (NSString *text in texts) { length += text.length; if (length > 60000) return NO; }
     NSMutableArray *unique = [NSMutableArray array];
     NSMutableSet *seen = [NSMutableSet set];
     for (NSString *text in texts) {

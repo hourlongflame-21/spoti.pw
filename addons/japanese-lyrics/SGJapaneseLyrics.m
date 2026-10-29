@@ -8,9 +8,10 @@
 #import <dlfcn.h>
 #import "JPPolicy.h"
 #import "JPResearch.h"
+#import "JPTranslationCache.h"
 #import <WebKit/WebKit.h>
 
-static char markerKey, applyingKey, gestureProxyKey, autoScheduledKey, languageKey, visibilityKey;
+static char markerKey, applyingKey, gestureProxyKey, autoScheduledKey, languageKey, visibilityKey, appliedLinesKey, cacheReadKey;
 static void (*originalOffer)(id, SEL);
 static NSString *(*lineText)(id);
 static id (*trackFor)(NSString *);
@@ -44,6 +45,8 @@ static NSString *const modelKey = @"hourlong.japaneseLyrics.model";
 static NSString *const showKey = @"spotifyglass.redesign.lyricsTranslation";
 static NSMutableSet<NSString *> *pending;
 static NSHashTable<UIView *> *views;
+static JPTranslationCache *translationCache;
+static void TranslateNow(UIView *view, BOOL automatic);
 
 static id Object(id obj, Ivar ivar) { return obj && ivar ? object_getIvar(obj, ivar) : nil; }
 static void Call(id obj, NSString *name) {
@@ -158,11 +161,7 @@ static NSString *Identity(NSString *track, NSArray *texts) {
 static NSURL *CacheDirectory(void) {
     NSURL *base = [NSFileManager.defaultManager URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject;
     NSURL *dir = [base URLByAppendingPathComponent:@"JapaneseLyricsAddon" isDirectory:YES];
-    [NSFileManager.defaultManager createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:NULL];
     return dir;
-}
-static NSURL *CacheURL(NSString *identity) {
-    return [CacheDirectory() URLByAppendingPathComponent:[identity stringByAppendingString:@".json"]];
 }
 static BOOL ValidTranslations(id value, NSUInteger count) {
     if (![value isKindOfClass:NSArray.class] || [value count] != count) return NO;
@@ -170,29 +169,13 @@ static BOOL ValidTranslations(id value, NSUInteger count) {
         if (![text isKindOfClass:NSString.class] || [text length] > 8192) return NO;
     return YES;
 }
-static NSArray *Cached(NSString *identity, NSUInteger count) {
-    NSData *data = [NSData dataWithContentsOfURL:CacheURL(identity)];
-    if (!data || data.length > 2*1024*1024) return nil;
-    id value = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-    return ValidTranslations(value, count) ? value : nil;
-}
-static void SaveCache(NSString *identity, NSArray *translations) {
-    NSData *data = [NSJSONSerialization dataWithJSONObject:translations options:0 error:NULL];
-    if (!data || data.length > 2*1024*1024) return;
-    [data writeToURL:CacheURL(identity) options:NSDataWritingAtomic error:NULL];
-    NSArray<NSURL *> *files = [NSFileManager.defaultManager contentsOfDirectoryAtURL:CacheDirectory()
-        includingPropertiesForKeys:@[NSURLContentModificationDateKey] options:0 error:NULL];
-    if (files.count <= 50) return;
-    files = [files sortedArrayUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) {
-        NSDate *ad, *bd; [a getResourceValue:&ad forKey:NSURLContentModificationDateKey error:NULL];
-        [b getResourceValue:&bd forKey:NSURLContentModificationDateKey error:NULL];
-        return [(ad ?: NSDate.distantPast) compare:(bd ?: NSDate.distantPast)];
-    }];
-    for (NSUInteger i=0;i<files.count-50;i++) [NSFileManager.defaultManager removeItemAtURL:files[i] error:NULL];
+static BOOL HasApplied(UIView *view, NSString *identity) {
+    return [objc_getAssociatedObject(view, &markerKey) isEqual:identity] &&
+        objc_getAssociatedObject(view, &appliedLinesKey) == Object(view, linesIvar);
 }
 static void Apply(UIView *view, NSString *identity, NSArray *translations) {
     NSArray *lines = Object(view, linesIvar);
-    if (!ValidTranslations(translations, lines.count)) return;
+    if (!ValidTranslations(translations, lines.count) || HasApplied(view, identity)) return;
     if (![Identity(Object(view, trackIvar), Texts(lines)) isEqualToString:identity]) return;
     NSMutableArray *copies = [NSMutableArray arrayWithCapacity:lines.count];
     NSArray *properties = @[@"words",@"start",@"end",@"voice",@"align",@"timing",@"backing",@"pronunciation",@"translation"];
@@ -204,7 +187,9 @@ static void Apply(UIView *view, NSString *identity, NSArray *translations) {
     }
     objc_setAssociatedObject(view, &markerKey, identity, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(view, &applyingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    object_setIvar(view, linesIvar, [copies copy]);
+    NSArray *applied = [copies copy];
+    object_setIvar(view, linesIvar, applied);
+    objc_setAssociatedObject(view, &appliedLinesKey, applied, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [NSUserDefaults.standardUserDefaults setBool:DisplayMode() != 2 forKey:showKey];
     Call(view, @"timeLines");
     Call(view, @"restyle");
@@ -227,7 +212,7 @@ static id ResponseValue(NSData *data, NSInteger status, NSString **failure) {
     id parts = [content isKindOfClass:NSDictionary.class] ? content[@"parts"] : nil;
     NSMutableString *text = [NSMutableString string];
     if ([parts isKindOfClass:NSArray.class]) for (id part in parts)
-        if ([part isKindOfClass:NSDictionary.class] && ![part[@"thought"] boolValue] && [part[@"text"] isKindOfClass:NSString.class]) [text appendString:part[@"text"]];
+        if ([part isKindOfClass:NSDictionary.class] && !([part[@"thought"] isKindOfClass:NSNumber.class] && [part[@"thought"] boolValue]) && [part[@"text"] isKindOfClass:NSString.class]) [text appendString:part[@"text"]];
     id rows = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:NSJSONReadingFragmentsAllowed error:NULL];
     if (!rows) *failure = @"返答の形式を読み取れませんでした。";
     return rows;
@@ -254,15 +239,30 @@ static NSArray *Decode(NSData *data, NSInteger status, NSUInteger uniqueCount, N
     return result;
 }
 static void Translate(UIView *view, BOOL automatic) {
+    NSArray *texts = Texts(Object(view, linesIvar));
+    NSString *identity = Identity(Object(view, trackIvar), texts);
+    if (!identity || !texts.count || texts.count > 400 || [pending containsObject:identity] || HasApplied(view, identity)) return;
+    __weak UIView *weakView = view;
+    // Warm language decisions off the UI thread. Both cache callbacks and API setup return to main.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        BOOL eligible = !automatic || JPShouldAutoTranslate(texts);
+        if (!automatic) for (NSString *text in texts) JPKeepOriginal(text);
+        [translationCache readIdentity:identity count:texts.count completion:^(NSArray *saved) {
+            UIView *v = weakView;
+            if (!v || HasApplied(v, identity) || ![Identity(Object(v, trackIvar), Texts(Object(v, linesIvar))) isEqual:identity]) return;
+            if (saved) Apply(v, identity, saved);
+            else if (!eligible) return;
+            else if (!automatic || (AutoEnabled() && DisplayMode() != 2)) TranslateNow(v, automatic);
+        }];
+    });
+}
+static void TranslateNow(UIView *view, BOOL automatic) {
     NSString *key = APIKey();
     if (!key.length) { if (!automatic) Configure(view); return; }
     NSArray *lines = Object(view, linesIvar);
     NSArray<NSString *> *texts = Texts(lines);
     NSString *identity = Identity(Object(view, trackIvar), texts);
     if (!identity || !lines.count || [pending containsObject:identity]) return;
-    if (automatic && !JPShouldAutoTranslate(texts)) return;
-    NSArray *saved = Cached(identity, texts.count);
-    if (saved) { Apply(view, identity, saved); return; }
     if (texts.count > 400) { if (!automatic) Alert(view, @"翻訳できません", @"この曲は行数が多すぎます（上限400行）。"); return; }
     NSMutableArray *unique = [NSMutableArray array], *mapping = [NSMutableArray array];
     NSMutableDictionary *indices = [NSMutableDictionary dictionary];
@@ -307,9 +307,9 @@ static void Translate(UIView *view, BOOL automatic) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [pending removeObject:identity];
             if (answer) {
-                SaveCache(identity, full);
+                [translationCache writeIdentity:identity translations:full completion:nil];
                 for (UIView *v in views) Apply(v, identity, full);
-            } else if (!automatic && !answer) Alert(weakView, @"翻訳できませんでした", failure);
+            } else if (!automatic && !answer && [Identity(Object(weakView, trackIvar), Texts(Object(weakView, linesIvar))) isEqual:identity]) Alert(weakView, @"翻訳できませんでした", failure);
             RefreshMenus();
         });
     }] resume];
@@ -321,22 +321,30 @@ static BOOL Visible(UIView *view) {
     return YES;
 }
 static void ScheduleAuto(UIView *view) {
-    if (!AutoEnabled() || DisplayMode() == 2 || !Visible(view) || !APIKey().length) return;
+    if (!AutoEnabled() || DisplayMode() == 2 || !Visible(view)) return;
     NSArray *lines = Object(view, linesIvar);
     if (![lines isKindOfClass:NSArray.class] || !lines.count) return;
     NSArray *texts = Texts(lines);
     NSString *identity = Identity(Object(view, trackIvar), texts);
-    if (!identity || [objc_getAssociatedObject(view, &markerKey) isEqual:identity] ||
+    if (!identity || HasApplied(view, identity) ||
         [pending containsObject:identity] || [autoAttempted containsObject:identity] ||
         [objc_getAssociatedObject(view, &autoScheduledKey) isEqual:identity]) return;
     NSDictionary *language = objc_getAssociatedObject(view, &languageKey);
-    BOOL eligible;
-    if ([language[@"identity"] isEqual:identity]) eligible = [language[@"eligible"] boolValue];
-    else {
-        eligible = JPShouldAutoTranslate(texts);
-        objc_setAssociatedObject(view, &languageKey, @{@"identity":identity, @"eligible":@(eligible)}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (![language[@"identity"] isEqual:identity]) {
+        objc_setAssociatedObject(view, &languageKey, @{@"identity":identity, @"pending":@YES}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        __weak UIView *weakView = view;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            BOOL eligible = JPShouldAutoTranslate(texts);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UIView *v = weakView;
+                if (!v || ![Identity(Object(v, trackIvar), Texts(Object(v, linesIvar))) isEqual:identity]) return;
+                objc_setAssociatedObject(v, &languageKey, @{@"identity":identity, @"eligible":@(eligible)}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                ScheduleAuto(v);
+            });
+        });
+        return;
     }
-    if (!eligible || texts.count > 400) return;
+    if ([language[@"pending"] boolValue] || ![language[@"eligible"] boolValue] || texts.count > 400 || !APIKey().length) return;
     objc_setAssociatedObject(view, &autoScheduledKey, identity, OBJC_ASSOCIATION_COPY_NONATOMIC);
     __weak UIView *weakView = view;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -347,7 +355,7 @@ static void ScheduleAuto(UIView *view) {
         if (!Visible(v) || !AutoEnabled() || DisplayMode() == 2 || !APIKey().length ||
             ![Identity(Object(v, trackIvar), Texts(Object(v, linesIvar))) isEqual:identity] ||
             [autoAttempted containsObject:identity] || [pending containsObject:identity] ||
-            [objc_getAssociatedObject(v, &markerKey) isEqual:identity]) return;
+            HasApplied(v, identity)) return;
         [autoAttempted addObject:identity]; // No automatic retry loop after API/rate-limit failures.
         Translate(v, YES);
     });
@@ -432,18 +440,6 @@ static void SetShowing(id view, SEL selector, BOOL showing) {
     self.textView.adjustsFontForContentSizeCategory = YES;
     self.textView.textContainerInset = UIEdgeInsetsMake(20, 20, 30, 20);
     [self.stack addArrangedSubview:self.textView];
-    WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
-    configuration.websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore;
-    configuration.defaultWebpagePreferences.allowsContentJavaScript = NO;
-    configuration.preferences.javaScriptCanOpenWindowsAutomatically = NO;
-    self.searchView = [[WKWebView alloc] initWithFrame:CGRectZero configuration:configuration];
-    self.searchView.navigationDelegate = self;
-    self.searchView.opaque = NO;
-    self.searchView.backgroundColor = UIColor.systemBackgroundColor;
-    self.searchView.hidden = YES;
-    [self.stack addArrangedSubview:self.searchView];
-    NSLayoutConstraint *suggestionHeight = [self.searchView.heightAnchor constraintEqualToConstant:160];
-    suggestionHeight.priority = 999; suggestionHeight.active = YES;
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     self.spinner.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.spinner];
@@ -475,9 +471,26 @@ static void SetShowing(id view, SEL selector, BOOL showing) {
     BOOL initial = [url.absoluteString isEqual:@"about:blank"] || [url.absoluteString isEqual:@"https://www.google.com/"];
     decisionHandler(initial && !link ? WKNavigationActionPolicyAllow : WKNavigationActionPolicyCancel);
 }
+- (void)prepareSearchView {
+    if (self.searchView) return;
+    WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
+    configuration.websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore;
+    configuration.defaultWebpagePreferences.allowsContentJavaScript = NO;
+    configuration.preferences.javaScriptCanOpenWindowsAutomatically = NO;
+    self.searchView = [[WKWebView alloc] initWithFrame:CGRectZero configuration:configuration];
+    self.searchView.navigationDelegate = self;
+    self.searchView.opaque = NO;
+    self.searchView.backgroundColor = UIColor.systemBackgroundColor;
+    self.searchView.hidden = YES;
+    [self.stack addArrangedSubview:self.searchView];
+    NSLayoutConstraint *suggestionHeight = [self.searchView.heightAnchor constraintEqualToConstant:160];
+    suggestionHeight.priority = 999; suggestionHeight.active = YES;
+}
 - (void)showAnswer:(NSDictionary *)answer {
     [self.spinner stopAnimating];
     NSString *html = answer[@"suggestionsHTML"];
+    self.searchView.hidden = !html.length;
+    if (html.length) [self prepareSearchView];
     self.searchView.hidden = !html.length;
     if (html.length) [self.searchView loadHTMLString:html baseURL:[NSURL URLWithString:@"https://www.google.com/"]];
     NSString *model = [answer[@"model"] length] ? answer[@"model"] : self.requestModel;
@@ -665,9 +678,14 @@ static void Offer(id obj, SEL selector) {
     if (![lines isKindOfClass:NSArray.class] || !lines.count) return;
     NSString *identity = Identity(Object(view, trackIvar), Texts(lines));
     BOOL applying = [objc_getAssociatedObject(view, &applyingKey) boolValue];
-    if (!applying && ![objc_getAssociatedObject(view, &markerKey) isEqual:identity]) {
-        NSArray *saved = Cached(identity, lines.count);
-        if (saved) { Apply(view, identity, saved); return; }
+    NSDictionary *lookup = objc_getAssociatedObject(view, &cacheReadKey);
+    if (!applying && !HasApplied(view, identity) &&
+        (lookup[@"lines"] != lines || ![lookup[@"identity"] isEqual:identity])) {
+        objc_setAssociatedObject(view, &cacheReadKey, @{@"lines":lines, @"identity":identity}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        __weak UIView *weakView = view;
+        [translationCache readIdentity:identity count:lines.count completion:^(NSArray *saved) {
+            if (saved && weakView) Apply(weakView, identity, saved);
+        }];
     }
     UIButton *button = Object(view, extrasIvar);
     if (!button) {
@@ -776,6 +794,7 @@ static void Install(void) {
         !class_getInstanceMethod(c, NSSelectorFromString(@"timeLines")) ||
         !class_getInstanceMethod(c, NSSelectorFromString(@"restyle"))) return;
     pending = [NSMutableSet set]; views = [NSHashTable weakObjectsHashTable];
+    translationCache = [[JPTranslationCache alloc] initWithDirectory:CacheDirectory()];
     autoAttempted = [NSMutableSet set]; explanationPending = [NSMutableSet set];
     originalStyle = (id (*)(id, SEL))method_setImplementation(styleMethod, (IMP)StyleNow);
     originalWindow = (void (*)(id, SEL))method_setImplementation(windowMethod, (IMP)MovedToWindow);
