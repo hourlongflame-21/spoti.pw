@@ -28,6 +28,10 @@ jobs:
         run: |
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -framework Foundation JPTranslationCache.m tests/cache_test.m -o "$RUNNER_TEMP/jp-cache-tests"
           "$RUNNER_TEMP/jp-cache-tests"
+      - name: Test core rendering guards and shared artwork work
+        run: |
+          clang -fobjc-arc -fblocks -Wall -Wextra -Werror -framework Foundation JPCoreWork.m tests/core_test.m -o "$RUNNER_TEMP/jp-core-tests"
+          "$RUNNER_TEMP/jp-core-tests"
       - name: Build and verify add-on
         run: bash build.sh
       - uses: actions/upload-artifact@v4
